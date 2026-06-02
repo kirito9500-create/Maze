@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Карта Лабиринта ВК</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 650px;
+            width: 100%;
+        }
+        h2 { margin-top: 0; color: #333; }
+        input {
+            width: 90%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 10px 5px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: 0.2s;
+        }
+        button:hover { background-color: #45a049; }
+        .btn-secondary { background-color: #2196F3; }
+        .btn-secondary:hover { background-color: #0b7dda; }
+        .btn-danger { background-color: #f44336; }
+        .btn-danger:hover { background-color: #da190b; }
+        
+        #statusLabel { font-weight: bold; margin: 10px 0; color: gray; }
+        canvas {
+            border: 1px solid #ddd;
+            background-color: #fafafa;
+            border-radius: 8px;
+            margin-top: 10px;
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container" id="loginScreen">
+    <h2>Настройка подключения</h2>
+    <p style="font-size: 14px; color: #666;">Данные сохраняются только в вашем браузере (localStorage)</p>
+    <input type="text" id="tokenInput" placeholder="Токен ВКонтакте (Kate Mobile)">
+    <input type="text" id="dialogIdInput" placeholder="ID диалога (например: -182985865)">
+    <button onclick="login()">Подключиться к игре</button>
+</div>
+
+<div class="container" id="appScreen" style="display: none;">
+    <h2>Лабиринт</h2>
+    <div id="statusLabel">Жду начала лабиринта...</div>
+    <div>
+        <button class="btn-secondary" onclick="saveMap()">Сохранить карту</button>
+        <button class="btn-secondary" onclick="resetMap()">Очистить холст</button>
+        <button class="btn-danger" onclick="logout()">Выйти</button>
+    </div>
+    <canvas id="mapCanvas" width="600" height="600"></canvas>
+</div>
+
+<script>
+    // === Глобальные переменные ===
+    let token = '';
+    let dialogId = '';
+    let isTracking = false;
+    let isPolling = false;
+    let longPollData = null;
+
+    // Игровые переменные
+    let cx = 0, cy = 0;
+    let lastX = 0, lastY = 0;
+    let visited = new Set(['0,0']);
+    let markers = {}; // Формат: {"x,y": "💖"}
+
+    // === Инициализация при загрузке страницы ===
+    window.onload = () => {
+        const savedToken = localStorage.getItem('vk_token');
+        const savedDialog = localStorage.getItem('vk_dialog_id');
+        
+        if (savedToken && savedDialog) {
+            document.getElementById('tokenInput').value = savedToken;
+            document.getElementById('dialogIdInput').value = savedDialog;
+            login(); // Автоматический вход
+        }
+        drawMap();
+    };
+
+    // === Логика входа и выхода ===
+    function login() {
+        token = document.getElementById('tokenInput').value.trim();
+        dialogId = document.getElementById('dialogIdInput').value.trim();
+
+        if (!token || !dialogId) {
+            alert('Пожалуйста, заполните оба поля!');
+            return;
+        }
+
+        // Сохраняем в браузере
+        localStorage.setItem('vk_token', token);
+        localStorage.setItem('vk_dialog_id', dialogId);
+
+        // Переключаем экраны
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('appScreen').style.display = 'block';
+
+        startVkListener();
+    }
+
+    function logout() {
+        isPolling = false;
+        localStorage.removeItem('vk_token');
+        localStorage.removeItem('vk_dialog_id');
+        document.getElementById('loginScreen').style.display = 'block';
+        document.getElementById('appScreen').style.display = 'none';
+        updateStatus("Остановлено", "gray");
+    }
+
+    function updateStatus(text, color) {
+        const lbl = document.getElementById('statusLabel');
+        lbl.innerText = text;
+        lbl.style.color = color;
+    }
+
+    // === Работа с VK LongPoll ===
+    function startVkListener() {
+        updateStatus("Подключение к серверам ВК...", "orange");
+        
+        // Используем JSONP для обхода CORS при первом запросе к API ВК
+        const script = document.createElement('script');
+        const callbackName = 'vkCallback_' + Math.round(Math.random() * 10000);
+        
+        window[callbackName] = function(data) {
+            if (data.response) {
+                longPollData = data.response;
+                isPolling = true;
+                updateStatus("Подключено! Жду начала лабиринта...", "gray");
+                poll(); // Запускаем бесконечный цикл прослушки
+            } else {
+                updateStatus("Ошибка подключения. Проверьте токен.", "red");
+                alert("Ошибка от ВК: " + JSON.stringify(data.error));
+                logout();
+            }
+            delete window[callbackName];
+            document.head.removeChild(script);
+        };
+
+        script.src = `https://api.vk.com/method/messages.getLongPollServer?need_pts=0&lp_version=3&v=5.131&access_token=${token}&callback=${callbackName}`;
+        document.head.appendChild(script);
+    }
+
+    async function poll() {
+        if (!isPolling) return;
+
+        const url = `https://${longPollData.server}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=25&mode=2&version=3`;
+        
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+
+            if (data.failed) {
+                // Если ключ устарел, запрашиваем новый
+                startVkListener();
+                return;
+            }
+
+            longPollData.ts = data.ts; // Обновляем временную метку
+            processUpdates(data.updates);
+            
+            // Запускаем следующий цикл
+            poll();
+        } catch (error) {
+            console.error("Ошибка сети при LongPoll. Переподключение...", error);
+            setTimeout(poll, 5000); // Ждем 5 сек и пробуем снова
+        }
+    }
+
+    // === Обработка сообщений ===
+    function processUpdates(updates) {
+        if (!updates) return;
+        
+        for (let u of updates) {
+            // u[0] == 4 это код нового сообщения
+            if (u[0] === 4 && u[3] == dialogId) {
+                // В LongPoll флаг 2 означает, что сообщение ИСХОДЯЩЕЕ (от тебя)
+                const isOut = (u[2] & 2) !== 0; 
+                const msgText = (u[5] || "").toLowerCase();
+                
+                handleMessage(msgText, isOut);
+            }
+        }
+    }
+
+    function handleMessage(msg, isOut) {
+        if (!isOut) {
+            // === СООБЩЕНИЯ ОТ БОТА ===
+            if (msg.includes("вы обнаруживаете, что потеряли дорогу")) {
+                isTracking = true;
+                resetMap();
+                updateStatus("В ЛАБИРИНТЕ (Запись идет)", "green");
+            }
+            
+            if (isTracking) {
+                const key = `${cx},${cy}`;
+                if (msg.includes("вы обнаружили целебный источник")) {
+                    markers[key] = '💖';
+                    drawMap();
+                } else if (msg.includes("вы успешно нашли выход")) {
+                    isTracking = false;
+                    updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
+                    drawMap();
+                } else if (msg.includes("в этом направлении только глухая стена")) {
+                    visited.delete(key);
+                    cx = lastX;
+                    cy = lastY;
+                    drawMap();
+                } else if (msg.includes("источник ветра уже совсем близко")) {
+                    markers[key] = '🚪';
+                    drawMap();
+                }
+            }
+        } else {
+            // === ТВОИ СООБЩЕНИЯ ===
+            if (isTracking) {
+                if (msg.includes("покинуть лабиринт")) {
+                    isTracking = false;
+                    updateStatus("Покинули лабиринт. Жду нового...", "gray");
+                    drawMap();
+                    return;
+                }
+
+                let moved = false;
+                let tempX = cx, tempY = cy;
+
+                if (msg.includes("на юг")) { cy -= 1; moved = true; }
+                else if (msg.includes("на север")) { cy += 1; moved = true; }
+                else if (msg.includes("на восток")) { cx += 1; moved = true; }
+                else if (msg.includes("на запад")) { cx -= 1; moved = true; }
+
+                if (moved) {
+                    lastX = tempX; 
+                    lastY = tempY;
+                    const key = `${cx},${cy}`;
+                    visited.add(key);
+                    
+                    // Замена розового сердца на черное при повторном визите
+                    if (markers[key] === '💖') {
+                        markers[key] = '🖤';
+                    }
+                    drawMap();
+                }
+            }
+        }
+    }
+
+    // === Отрисовка на Canvas ===
+    function drawMap() {
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Очищаем холст
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const step = 40;
+
+        // Рисуем комнаты
+        visited.forEach(pos => {
+            const [rx, ry] = pos.split(',').map(Number);
+            const x = centerX + rx * step;
+            const y = centerY - ry * step;
+
+            // Квадрат комнаты
+            ctx.fillStyle = "lightgray";
+            ctx.strokeStyle = "gray";
+            ctx.fillRect(x - 15, y - 15, 30, 30);
+            ctx.strokeRect(x - 15, y - 15, 30, 30);
+
+            // Отрисовка смайликов
+            if (markers[pos]) {
+                ctx.font = "16px Arial";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "black";
+                ctx.fillText(markers[pos], x, y);
+            }
+        });
+
+        // Рисуем текущую позицию (игрока)
+        if (isTracking) {
+            const px = centerX + cx * step;
+            const py = centerY - cy * step;
+            ctx.beginPath();
+            ctx.arc(px, py, 10, 0, 2 * Math.PI);
+            ctx.fillStyle = "red";
+            ctx.fill();
+            ctx.closePath();
+        }
+    }
+
+    function resetMap() {
+        cx = 0; cy = 0;
+        lastX = 0; lastY = 0;
+        visited = new Set(['0,0']);
+        markers = {};
+        drawMap();
+    }
+
+    // === Сохранение картинки ===
+    function saveMap() {
+        const canvas = document.getElementById('mapCanvas');
+        // Создаем виртуальную ссылку для скачивания картинки
+        const link = document.createElement('a');
+        link.download = 'labyrinth_map.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    }
+</script>
+
+</body>
+</html>
