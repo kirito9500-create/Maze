@@ -37,7 +37,6 @@
             box-sizing: border-box;
         }
         
-        /* Сетка для кнопок, чтобы они красиво вставали на мобильных */
         .btn-group {
             display: flex;
             flex-wrap: wrap;
@@ -45,7 +44,7 @@
             margin-top: 10px;
         }
         button {
-            flex: 1 1 calc(50% - 10px); /* По 2 кнопки в ряд на телефоне */
+            flex: 1 1 calc(50% - 10px); 
             color: white;
             border: none;
             padding: 12px;
@@ -66,7 +65,6 @@
         
         #statusLabel { font-weight: bold; margin: 10px 0; color: gray; font-size: 16px; }
         
-        /* Окно консоли для вывода сообщений */
         .console-box {
             background-color: #1e1e1e;
             color: #4CAF50;
@@ -85,14 +83,13 @@
         }
         .console-title { color: #888; font-size: 11px; margin-bottom: 5px; text-transform: uppercase;}
 
-        /* Адаптивный холст */
         canvas {
             border: 1px solid #ddd;
             background-color: #fafafa;
             border-radius: 8px;
-            width: 100%; /* Занимает всю ширину контейнера */
-            height: auto; /* Высота подстраивается */
-            aspect-ratio: 1 / 1; /* Сохраняет квадратные пропорции */
+            width: 100%; 
+            height: auto; 
+            aspect-ratio: 1 / 1; 
             cursor: crosshair;
             display: block;
             margin-top: 15px;
@@ -103,7 +100,7 @@
 
 <div class="container" id="loginScreen">
     <h2>Настройка подключения</h2>
-    <p style="font-size: 14px; color: #666;">Данные сохраняются только в вашем браузере (localStorage)</p>
+    <p style="font-size: 14px; color: #666;">Данные сохраняются только в вашем браузере</p>
     <input type="text" id="tokenInput" placeholder="Токен ВКонтакте">
     <input type="text" id="dialogIdInput" placeholder="ID диалога (например: -182985865)">
     <button class="btn-success" style="width: 100%; margin-top: 15px;" onclick="login()">Подключиться к игре</button>
@@ -115,7 +112,7 @@
     <div id="statusLabel">Ожидание запуска...</div>
     
     <div class="console-box">
-        <span class="console-title">Последнее сообщение в чате:</span>
+        <span class="console-title">Последнее сообщение (из ЛЮБОГО чата):</span>
         <span id="lastMessageText" style="color: #ccc;">(сообщений пока нет)</span>
     </div>
 
@@ -190,18 +187,17 @@
         lbl.style.color = color;
     }
 
-    // Включение / Отключение записи вручную
     function toggleTracking() {
         isTracking = !isTracking;
         const btn = document.getElementById('btnStart');
         
         if (isTracking) {
             btn.innerText = "Остановить запись";
-            btn.style.backgroundColor = "#ff9800"; // Оранжевый цвет для индикации работы
+            btn.style.backgroundColor = "#ff9800"; 
             updateStatus("ЗАПИСЬ ИДЕТ", "green");
         } else {
             btn.innerText = "Начать запись";
-            btn.style.backgroundColor = "#4CAF50"; // Снова зеленый
+            btn.style.backgroundColor = "#4CAF50"; 
             updateStatus("Запись остановлена", "gray");
         }
         drawMap();
@@ -211,122 +207,131 @@
         updateStatus("Подключение к серверам ВК...", "orange");
         
         const script = document.createElement('script');
-        const callbackName = 'vkCallback_' + Math.round(Math.random() * 10000);
+        const callbackName = 'vkInit_' + Math.round(Math.random() * 100000);
         
         window[callbackName] = function(data) {
+            delete window[callbackName];
+            document.head.removeChild(script);
+
             if (data.response) {
                 longPollData = data.response;
                 isPolling = true;
                 updateStatus("Связь установлена. Жду включения записи.", "gray");
                 poll(); 
             } else {
-                updateStatus("Ошибка подключения. Проверьте токен.", "red");
+                updateStatus("Ошибка. Проверьте токен.", "red");
                 alert("Ошибка от ВК: " + JSON.stringify(data.error));
                 logout();
             }
-            delete window[callbackName];
-            document.head.removeChild(script);
         };
+
+        script.onerror = function() {
+            updateStatus("Ошибка сети. Проверьте интернет.", "red");
+        }
 
         script.src = `https://api.vk.com/method/messages.getLongPollServer?need_pts=0&lp_version=3&v=5.131&access_token=${token}&callback=${callbackName}`;
         document.head.appendChild(script);
     }
 
-    async function poll() {
+    function poll() {
         if (!isPolling) return;
 
-        // Убираем 'api.vk.com/' и отправляем запрос через наш локальный прокси Vercel
-        const serverPath = longPollData.server.replace('api.vk.com/', '');
-        const url = `/vk-api/${serverPath}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=20&mode=2&version=3`;
+        // Используем метод JSONP для обхода CORS и таймаутов Vercel
+        const script = document.createElement('script');
+        const callbackName = 'vkPoll_' + Math.round(Math.random() * 1000000);
         
-        try {
-            const response = await fetch(url);
-            const data = await response.json();
+        let serverUrl = longPollData.server;
+        if (!serverUrl.startsWith('http')) {
+            serverUrl = 'https://' + serverUrl;
+        }
+
+        window[callbackName] = function(data) {
+            delete window[callbackName];
+            document.head.removeChild(script);
 
             if (data.failed) {
+                // Если ключ устарел, получаем новый
                 startVkListener();
                 return;
             }
 
             longPollData.ts = data.ts; 
             processUpdates(data.updates);
-            
-            poll();
-        } catch (error) {
-            console.error("Ошибка сети при LongPoll. Переподключение...", error);
-            setTimeout(poll, 5000); 
-        }
+            poll(); // Мгновенный запуск следующего цикла
+        };
+
+        script.onerror = function() {
+            delete window[callbackName];
+            document.head.removeChild(script);
+            console.error("Сбой соединения (JSONP). Повтор через 3 сек...");
+            setTimeout(poll, 3000);
+        };
+
+        script.src = `${serverUrl}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=20&mode=2&version=3&callback=${callbackName}`;
+        document.head.appendChild(script);
     }
 
     function processUpdates(updates) {
         if (!updates) return;
         
         for (let u of updates) {
-            if (u[0] === 4 && u[3] == dialogId) {
+            // 4 = код нового сообщения в ВК
+            if (u[0] === 4) {
                 const isOut = (u[2] & 2) !== 0; 
+                const peerId = u[3]; // ID диалога
                 const rawMsg = u[5] || "";
                 const msgText = rawMsg.toLowerCase();
                 
-                // Выводим в консоль каждое сообщение, независимо от того, идет запись или нет
+                // 1. ВЫВОДИМ В КОНСОЛЬ ВООБЩЕ ВСЕ СООБЩЕНИЯ (проверка работоспособности)
                 const prefix = isOut ? "Вы: " : "Бот: ";
-                const color = isOut ? "#fff" : "#4CAF50"; // Ваши сообщения белые, бота - зеленые
-                document.getElementById('lastMessageText').innerHTML = `<span style="color: ${color}">${prefix}${rawMsg}</span>`;
+                const color = isOut ? "#fff" : "#4CAF50"; 
+                document.getElementById('lastMessageText').innerHTML = 
+                    `<span style="color: ${color}">${prefix}${rawMsg}</span> <span style="font-size: 11px; color: #888;">(ID: ${peerId})</span>`;
 
-                handleMessage(msgText, isOut);
-            }
-        }
-    }
+                // 2. РАБОТАЕМ С КАРТОЙ ТОЛЬКО ЕСЛИ ID СОВПАДАЕТ С ИГРОЙ
+                if (peerId == dialogId && isTracking) {
+                    if (!isOut) {
+                        const key = `${cx},${cy}`;
+                        if (msgText.includes("вы обнаружили целебный источник")) {
+                            markers[key] = '💖';
+                            drawMap();
+                        } else if (msgText.includes("в этом направлении только глухая стена")) {
+                            visited.delete(key);
+                            cx = lastX;
+                            cy = lastY;
+                            drawMap();
+                        } else if (msgText.includes("источник ветра уже совсем близко")) {
+                            markers[key] = '🚪';
+                            drawMap();
+                        } else if (msgText.includes("вы успешно нашли выход")) {
+                            toggleTracking();
+                            updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
+                        }
+                    } else {
+                        if (msgText.includes("покинуть лабиринт")) {
+                            toggleTracking();
+                            updateStatus("Покинули лабиринт", "gray");
+                            return;
+                        }
 
-    function handleMessage(msg, isOut) {
-        // Мы удалили автоматический старт на "вы обнаруживаете, что потеряли дорогу".
-        // Теперь все зависит только от переменной isTracking (кнопки).
-        
-        if (isTracking) {
-            if (!isOut) {
-                // События от бота
-                const key = `${cx},${cy}`;
-                if (msg.includes("вы обнаружили целебный источник")) {
-                    markers[key] = '💖';
-                    drawMap();
-                } else if (msg.includes("в этом направлении только глухая стена")) {
-                    visited.delete(key);
-                    cx = lastX;
-                    cy = lastY;
-                    drawMap();
-                } else if (msg.includes("источник ветра уже совсем близко")) {
-                    markers[key] = '🚪';
-                    drawMap();
-                } else if (msg.includes("вы успешно нашли выход")) {
-                    // Автоматически останавливаем запись, чтобы не рисовать шаги вне лабиринта
-                    toggleTracking();
-                    updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
-                }
-            } else {
-                // События от вас
-                if (msg.includes("покинуть лабиринт")) {
-                    toggleTracking();
-                    updateStatus("Покинули лабиринт", "gray");
-                    return;
-                }
+                        let moved = false;
+                        let tempX = cx, tempY = cy;
 
-                let moved = false;
-                let tempX = cx, tempY = cy;
+                        if (msgText.includes("на юг")) { cy -= 1; moved = true; }
+                        else if (msgText.includes("на север")) { cy += 1; moved = true; }
+                        else if (msgText.includes("на восток")) { cx += 1; moved = true; }
+                        else if (msgText.includes("на запад")) { cx -= 1; moved = true; }
 
-                if (msg.includes("на юг")) { cy -= 1; moved = true; }
-                else if (msg.includes("на север")) { cy += 1; moved = true; }
-                else if (msg.includes("на восток")) { cx += 1; moved = true; }
-                else if (msg.includes("на запад")) { cx -= 1; moved = true; }
-
-                if (moved) {
-                    lastX = tempX; 
-                    lastY = tempY;
-                    const key = `${cx},${cy}`;
-                    visited.add(key);
-                    
-                    if (markers[key] === '💖') {
-                        markers[key] = '🖤';
+                        if (moved) {
+                            lastX = tempX; 
+                            lastY = tempY;
+                            const key = `${cx},${cy}`;
+                            visited.add(key);
+                            
+                            if (markers[key] === '💖') { markers[key] = '🖤'; }
+                            drawMap();
+                        }
                     }
-                    drawMap();
                 }
             }
         }
@@ -361,7 +366,6 @@
             }
         });
 
-        // Рисуем курсор только если идет запись
         if (isTracking) {
             const px = centerX + cx * step;
             const py = centerY - cy * step;
