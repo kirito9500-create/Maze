@@ -102,7 +102,7 @@
     <h2>Настройка подключения</h2>
     <p style="font-size: 14px; color: #666;">Данные сохраняются только в вашем браузере</p>
     <input type="text" id="tokenInput" placeholder="Токен ВКонтакте">
-    <input type="text" id="dialogIdInput" placeholder="ID диалога (например: -182985865)">
+    <input type="text" id="dialogIdInput" placeholder="ID диалога (например: -208825850)">
     <button class="btn-success" style="width: 100%; margin-top: 15px;" onclick="login()">Подключиться к игре</button>
 </div>
 
@@ -112,7 +112,7 @@
     <div id="statusLabel">Ожидание запуска...</div>
     
     <div class="console-box">
-        <span class="console-title">Последнее сообщение (из ЛЮБОГО чата):</span>
+        <span class="console-title">Последнее сообщение из игры:</span>
         <span id="lastMessageText" style="color: #ccc;">(сообщений пока нет)</span>
     </div>
 
@@ -131,7 +131,8 @@
     let dialogId = '';
     let isTracking = false;
     let isPolling = false;
-    let longPollData = null;
+    let pollInterval = null;
+    let lastMessageId = 0;
 
     let cx = 0, cy = 0;
     let lastX = 0, lastY = 0;
@@ -165,12 +166,15 @@
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('appScreen').style.display = 'block';
 
-        startVkListener();
+        updateStatus("Подключение к ВК...", "orange");
+        fetchInitialHistory();
     }
 
     function logout() {
         isPolling = false;
         isTracking = false;
+        if (pollInterval) clearInterval(pollInterval);
+        
         localStorage.removeItem('vk_token');
         localStorage.removeItem('vk_dialog_id');
         document.getElementById('loginScreen').style.display = 'block';
@@ -203,9 +207,8 @@
         drawMap();
     }
 
-    function startVkListener() {
-        updateStatus("Подключение к серверам ВК...", "orange");
-        
+    // === НОВАЯ СИСТЕМА: Получение истории сообщений ===
+    function fetchInitialHistory() {
         const script = document.createElement('script');
         const callbackName = 'vkInit_' + Math.round(Math.random() * 100000);
         
@@ -214,10 +217,18 @@
             document.head.removeChild(script);
 
             if (data.response) {
-                longPollData = data.response;
                 isPolling = true;
                 updateStatus("Связь установлена. Жду включения записи.", "gray");
-                poll(); 
+                
+                // Запоминаем ID последнего сообщения, чтобы не рисовать карту по старым шагам
+                if (data.response.items && data.response.items.length > 0) {
+                    const msg = data.response.items[0];
+                    lastMessageId = msg.id;
+                    displayInConsole(msg);
+                }
+                
+                // Запускаем проверку новых сообщений каждые 2 секунды
+                pollInterval = setInterval(pollHistory, 2000);
             } else {
                 updateStatus("Ошибка. Проверьте токен.", "red");
                 alert("Ошибка от ВК: " + JSON.stringify(data.error));
@@ -226,113 +237,111 @@
         };
 
         script.onerror = function() {
-            updateStatus("Ошибка сети. Проверьте интернет.", "red");
-        }
+            delete window[callbackName];
+            document.head.removeChild(script);
+            updateStatus("Ошибка сети. Повтор...", "red");
+            setTimeout(fetchInitialHistory, 3000);
+        };
 
-        script.src = `https://api.vk.com/method/messages.getLongPollServer?need_pts=0&lp_version=3&v=5.131&access_token=${token}&callback=${callbackName}`;
+        script.src = `https://api.vk.com/method/messages.getHistory?peer_id=${dialogId}&count=1&v=5.131&access_token=${token}&callback=${callbackName}`;
         document.head.appendChild(script);
     }
 
-    function poll() {
+    function pollHistory() {
         if (!isPolling) return;
 
-        // Используем метод JSONP для обхода CORS и таймаутов Vercel
         const script = document.createElement('script');
-        const callbackName = 'vkPoll_' + Math.round(Math.random() * 1000000);
+        const callbackName = 'vkPoll_' + Math.round(Math.random() * 100000);
         
-        let serverUrl = longPollData.server;
-        if (!serverUrl.startsWith('http')) {
-            serverUrl = 'https://' + serverUrl;
-        }
-
         window[callbackName] = function(data) {
             delete window[callbackName];
             document.head.removeChild(script);
 
-            if (data.failed) {
-                // Если ключ устарел, получаем новый
-                startVkListener();
-                return;
+            if (data.response && data.response.items) {
+                // Переворачиваем массив, чтобы читать от старых к самым новым
+                const items = data.response.items.reverse(); 
+                
+                for (let msg of items) {
+                    // Если сообщение новее, чем то, что мы видели последним
+                    if (msg.id > lastMessageId) {
+                        lastMessageId = msg.id;
+                        displayInConsole(msg);
+                        
+                        if (isTracking) {
+                            const msgText = (msg.text || "").toLowerCase();
+                            const isOut = msg.out === 1; // 1 - исходящее, 0 - входящее
+                            handleMessage(msgText, isOut);
+                        }
+                    }
+                }
+            } else if (data.error && data.error.error_code === 5) {
+                alert("Срок действия токена истек или он недействителен.");
+                logout();
             }
-
-            longPollData.ts = data.ts; 
-            processUpdates(data.updates);
-            poll(); // Мгновенный запуск следующего цикла
         };
 
         script.onerror = function() {
             delete window[callbackName];
             document.head.removeChild(script);
-            console.error("Сбой соединения (JSONP). Повтор через 3 сек...");
-            setTimeout(poll, 3000);
         };
 
-        script.src = `${serverUrl}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=20&mode=2&version=3&callback=${callbackName}`;
+        // Запрашиваем 5 последних сообщений раз в 2 секунды
+        script.src = `https://api.vk.com/method/messages.getHistory?peer_id=${dialogId}&count=5&v=5.131&access_token=${token}&callback=${callbackName}`;
         document.head.appendChild(script);
     }
 
-    function processUpdates(updates) {
-        if (!updates) return;
+    function displayInConsole(msg) {
+        const isOut = msg.out === 1;
+        const prefix = isOut ? "Вы: " : "Бот: ";
+        const color = isOut ? "#fff" : "#4CAF50"; 
+        const rawMsg = msg.text ? msg.text.split('\n')[0] + '...' : "[Вложение]"; // Берем только первую строку
         
-        for (let u of updates) {
-            // 4 = код нового сообщения в ВК
-            if (u[0] === 4) {
-                const isOut = (u[2] & 2) !== 0; 
-                const peerId = u[3]; // ID диалога
-                const rawMsg = u[5] || "";
-                const msgText = rawMsg.toLowerCase();
+        document.getElementById('lastMessageText').innerHTML = 
+            `<span style="color: ${color}">${prefix}${rawMsg}</span>`;
+    }
+
+    // === Логика обработки карты осталась без изменений ===
+    function handleMessage(msgText, isOut) {
+        if (!isOut) {
+            const key = `${cx},${cy}`;
+            if (msgText.includes("вы обнаружили целебный источник")) {
+                markers[key] = '💖';
+                drawMap();
+            } else if (msgText.includes("в этом направлении только глухая стена")) {
+                visited.delete(key);
+                cx = lastX;
+                cy = lastY;
+                drawMap();
+            } else if (msgText.includes("источник ветра уже совсем близко")) {
+                markers[key] = '🚪';
+                drawMap();
+            } else if (msgText.includes("вы успешно нашли выход")) {
+                toggleTracking();
+                updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
+            }
+        } else {
+            if (msgText.includes("покинуть лабиринт")) {
+                toggleTracking();
+                updateStatus("Покинули лабиринт", "gray");
+                return;
+            }
+
+            let moved = false;
+            let tempX = cx, tempY = cy;
+
+            if (msgText.includes("на юг")) { cy -= 1; moved = true; }
+            else if (msgText.includes("на север")) { cy += 1; moved = true; }
+            else if (msgText.includes("на восток")) { cx += 1; moved = true; }
+            else if (msgText.includes("на запад")) { cx -= 1; moved = true; }
+
+            if (moved) {
+                lastX = tempX; 
+                lastY = tempY;
+                const key = `${cx},${cy}`;
+                visited.add(key);
                 
-                // 1. ВЫВОДИМ В КОНСОЛЬ ВООБЩЕ ВСЕ СООБЩЕНИЯ (проверка работоспособности)
-                const prefix = isOut ? "Вы: " : "Бот: ";
-                const color = isOut ? "#fff" : "#4CAF50"; 
-                document.getElementById('lastMessageText').innerHTML = 
-                    `<span style="color: ${color}">${prefix}${rawMsg}</span> <span style="font-size: 11px; color: #888;">(ID: ${peerId})</span>`;
-
-                // 2. РАБОТАЕМ С КАРТОЙ ТОЛЬКО ЕСЛИ ID СОВПАДАЕТ С ИГРОЙ
-                if (peerId == dialogId && isTracking) {
-                    if (!isOut) {
-                        const key = `${cx},${cy}`;
-                        if (msgText.includes("вы обнаружили целебный источник")) {
-                            markers[key] = '💖';
-                            drawMap();
-                        } else if (msgText.includes("в этом направлении только глухая стена")) {
-                            visited.delete(key);
-                            cx = lastX;
-                            cy = lastY;
-                            drawMap();
-                        } else if (msgText.includes("источник ветра уже совсем близко")) {
-                            markers[key] = '🚪';
-                            drawMap();
-                        } else if (msgText.includes("вы успешно нашли выход")) {
-                            toggleTracking();
-                            updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
-                        }
-                    } else {
-                        if (msgText.includes("покинуть лабиринт")) {
-                            toggleTracking();
-                            updateStatus("Покинули лабиринт", "gray");
-                            return;
-                        }
-
-                        let moved = false;
-                        let tempX = cx, tempY = cy;
-
-                        if (msgText.includes("на юг")) { cy -= 1; moved = true; }
-                        else if (msgText.includes("на север")) { cy += 1; moved = true; }
-                        else if (msgText.includes("на восток")) { cx += 1; moved = true; }
-                        else if (msgText.includes("на запад")) { cx -= 1; moved = true; }
-
-                        if (moved) {
-                            lastX = tempX; 
-                            lastY = tempY;
-                            const key = `${cx},${cy}`;
-                            visited.add(key);
-                            
-                            if (markers[key] === '💖') { markers[key] = '🖤'; }
-                            drawMap();
-                        }
-                    }
-                }
+                if (markers[key] === '💖') { markers[key] = '🖤'; }
+                drawMap();
             }
         }
     }
