@@ -235,7 +235,9 @@
     async function poll() {
         if (!isPolling) return;
 
-        const url = `https://${longPollData.server}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=25&mode=2&version=3`;
+        // Убираем 'api.vk.com/' и отправляем запрос через наш локальный прокси Vercel
+        const serverPath = longPollData.server.replace('api.vk.com/', '');
+        const url = `/vk-api/${serverPath}?act=a_check&key=${longPollData.key}&ts=${longPollData.ts}&wait=20&mode=2&version=3`;
         
         try {
             const response = await fetch(url);
