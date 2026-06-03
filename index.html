@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Карта Лабиринта ВК</title>
     <style>
         body {
@@ -11,8 +11,10 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
+            padding: 10px;
+            box-sizing: border-box;
         }
         .container {
             background: white;
@@ -20,42 +22,80 @@
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             text-align: center;
-            max-width: 650px;
             width: 100%;
+            max-width: 600px;
+            box-sizing: border-box;
         }
         h2 { margin-top: 0; color: #333; }
         input {
-            width: 90%;
-            padding: 10px;
+            width: 100%;
+            padding: 12px;
             margin: 10px 0;
             border: 1px solid #ccc;
             border-radius: 6px;
             font-size: 14px;
+            box-sizing: border-box;
+        }
+        
+        /* Сетка для кнопок, чтобы они красиво вставали на мобильных */
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
         }
         button {
-            background-color: #4CAF50;
+            flex: 1 1 calc(50% - 10px); /* По 2 кнопки в ряд на телефоне */
             color: white;
             border: none;
-            padding: 10px 20px;
-            margin: 10px 5px;
+            padding: 12px;
             border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
+            font-weight: bold;
             transition: 0.2s;
+            min-width: 130px;
         }
-        button:hover { background-color: #45a049; }
+        
+        .btn-success { background-color: #4CAF50; }
+        .btn-success:hover { background-color: #45a049; }
         .btn-secondary { background-color: #2196F3; }
         .btn-secondary:hover { background-color: #0b7dda; }
         .btn-danger { background-color: #f44336; }
         .btn-danger:hover { background-color: #da190b; }
         
-        #statusLabel { font-weight: bold; margin: 10px 0; color: gray; }
+        #statusLabel { font-weight: bold; margin: 10px 0; color: gray; font-size: 16px; }
+        
+        /* Окно консоли для вывода сообщений */
+        .console-box {
+            background-color: #1e1e1e;
+            color: #4CAF50;
+            font-family: monospace;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: left;
+            margin: 15px 0;
+            font-size: 13px;
+            word-wrap: break-word;
+            min-height: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+        }
+        .console-title { color: #888; font-size: 11px; margin-bottom: 5px; text-transform: uppercase;}
+
+        /* Адаптивный холст */
         canvas {
             border: 1px solid #ddd;
             background-color: #fafafa;
             border-radius: 8px;
-            margin-top: 10px;
+            width: 100%; /* Занимает всю ширину контейнера */
+            height: auto; /* Высота подстраивается */
+            aspect-ratio: 1 / 1; /* Сохраняет квадратные пропорции */
             cursor: crosshair;
+            display: block;
+            margin-top: 15px;
         }
     </style>
 </head>
@@ -64,37 +104,43 @@
 <div class="container" id="loginScreen">
     <h2>Настройка подключения</h2>
     <p style="font-size: 14px; color: #666;">Данные сохраняются только в вашем браузере (localStorage)</p>
-    <input type="text" id="tokenInput" placeholder="Токен ВКонтакте (Kate Mobile)">
+    <input type="text" id="tokenInput" placeholder="Токен ВКонтакте">
     <input type="text" id="dialogIdInput" placeholder="ID диалога (например: -182985865)">
-    <button onclick="login()">Подключиться к игре</button>
+    <button class="btn-success" style="width: 100%; margin-top: 15px;" onclick="login()">Подключиться к игре</button>
 </div>
 
 <div class="container" id="appScreen" style="display: none;">
-    <h2>Лабиринт</h2>
-    <div id="statusLabel">Жду начала лабиринта...</div>
-    <div>
+    <h2>Карта Лабиринта</h2>
+    
+    <div id="statusLabel">Ожидание запуска...</div>
+    
+    <div class="console-box">
+        <span class="console-title">Последнее сообщение в чате:</span>
+        <span id="lastMessageText" style="color: #ccc;">(сообщений пока нет)</span>
+    </div>
+
+    <div class="btn-group">
+        <button id="btnStart" class="btn-success" onclick="toggleTracking()">Начать запись</button>
         <button class="btn-secondary" onclick="saveMap()">Сохранить карту</button>
         <button class="btn-secondary" onclick="resetMap()">Очистить холст</button>
         <button class="btn-danger" onclick="logout()">Выйти</button>
     </div>
+
     <canvas id="mapCanvas" width="600" height="600"></canvas>
 </div>
 
 <script>
-    // === Глобальные переменные ===
     let token = '';
     let dialogId = '';
     let isTracking = false;
     let isPolling = false;
     let longPollData = null;
 
-    // Игровые переменные
     let cx = 0, cy = 0;
     let lastX = 0, lastY = 0;
     let visited = new Set(['0,0']);
-    let markers = {}; // Формат: {"x,y": "💖"}
+    let markers = {}; 
 
-    // === Инициализация при загрузке страницы ===
     window.onload = () => {
         const savedToken = localStorage.getItem('vk_token');
         const savedDialog = localStorage.getItem('vk_dialog_id');
@@ -102,12 +148,11 @@
         if (savedToken && savedDialog) {
             document.getElementById('tokenInput').value = savedToken;
             document.getElementById('dialogIdInput').value = savedDialog;
-            login(); // Автоматический вход
+            login(); 
         }
         drawMap();
     };
 
-    // === Логика входа и выхода ===
     function login() {
         token = document.getElementById('tokenInput').value.trim();
         dialogId = document.getElementById('dialogIdInput').value.trim();
@@ -117,11 +162,9 @@
             return;
         }
 
-        // Сохраняем в браузере
         localStorage.setItem('vk_token', token);
         localStorage.setItem('vk_dialog_id', dialogId);
 
-        // Переключаем экраны
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('appScreen').style.display = 'block';
 
@@ -130,11 +173,15 @@
 
     function logout() {
         isPolling = false;
+        isTracking = false;
         localStorage.removeItem('vk_token');
         localStorage.removeItem('vk_dialog_id');
         document.getElementById('loginScreen').style.display = 'block';
         document.getElementById('appScreen').style.display = 'none';
-        updateStatus("Остановлено", "gray");
+        
+        document.getElementById('btnStart').innerText = "Начать запись";
+        document.getElementById('btnStart').style.backgroundColor = "#4CAF50";
+        updateStatus("Ожидание запуска...", "gray");
     }
 
     function updateStatus(text, color) {
@@ -143,11 +190,26 @@
         lbl.style.color = color;
     }
 
-    // === Работа с VK LongPoll ===
+    // Включение / Отключение записи вручную
+    function toggleTracking() {
+        isTracking = !isTracking;
+        const btn = document.getElementById('btnStart');
+        
+        if (isTracking) {
+            btn.innerText = "Остановить запись";
+            btn.style.backgroundColor = "#ff9800"; // Оранжевый цвет для индикации работы
+            updateStatus("ЗАПИСЬ ИДЕТ", "green");
+        } else {
+            btn.innerText = "Начать запись";
+            btn.style.backgroundColor = "#4CAF50"; // Снова зеленый
+            updateStatus("Запись остановлена", "gray");
+        }
+        drawMap();
+    }
+
     function startVkListener() {
         updateStatus("Подключение к серверам ВК...", "orange");
         
-        // Используем JSONP для обхода CORS при первом запросе к API ВК
         const script = document.createElement('script');
         const callbackName = 'vkCallback_' + Math.round(Math.random() * 10000);
         
@@ -155,8 +217,8 @@
             if (data.response) {
                 longPollData = data.response;
                 isPolling = true;
-                updateStatus("Подключено! Жду начала лабиринта...", "gray");
-                poll(); // Запускаем бесконечный цикл прослушки
+                updateStatus("Связь установлена. Жду включения записи.", "gray");
+                poll(); 
             } else {
                 updateStatus("Ошибка подключения. Проверьте токен.", "red");
                 alert("Ошибка от ВК: " + JSON.stringify(data.error));
@@ -180,55 +242,49 @@
             const data = await response.json();
 
             if (data.failed) {
-                // Если ключ устарел, запрашиваем новый
                 startVkListener();
                 return;
             }
 
-            longPollData.ts = data.ts; // Обновляем временную метку
+            longPollData.ts = data.ts; 
             processUpdates(data.updates);
             
-            // Запускаем следующий цикл
             poll();
         } catch (error) {
             console.error("Ошибка сети при LongPoll. Переподключение...", error);
-            setTimeout(poll, 5000); // Ждем 5 сек и пробуем снова
+            setTimeout(poll, 5000); 
         }
     }
 
-    // === Обработка сообщений ===
     function processUpdates(updates) {
         if (!updates) return;
         
         for (let u of updates) {
-            // u[0] == 4 это код нового сообщения
             if (u[0] === 4 && u[3] == dialogId) {
-                // В LongPoll флаг 2 означает, что сообщение ИСХОДЯЩЕЕ (от тебя)
                 const isOut = (u[2] & 2) !== 0; 
-                const msgText = (u[5] || "").toLowerCase();
+                const rawMsg = u[5] || "";
+                const msgText = rawMsg.toLowerCase();
                 
+                // Выводим в консоль каждое сообщение, независимо от того, идет запись или нет
+                const prefix = isOut ? "Вы: " : "Бот: ";
+                const color = isOut ? "#fff" : "#4CAF50"; // Ваши сообщения белые, бота - зеленые
+                document.getElementById('lastMessageText').innerHTML = `<span style="color: ${color}">${prefix}${rawMsg}</span>`;
+
                 handleMessage(msgText, isOut);
             }
         }
     }
 
     function handleMessage(msg, isOut) {
-        if (!isOut) {
-            // === СООБЩЕНИЯ ОТ БОТА ===
-            if (msg.includes("вы обнаруживаете, что потеряли дорогу")) {
-                isTracking = true;
-                resetMap();
-                updateStatus("В ЛАБИРИНТЕ (Запись идет)", "green");
-            }
-            
-            if (isTracking) {
+        // Мы удалили автоматический старт на "вы обнаруживаете, что потеряли дорогу".
+        // Теперь все зависит только от переменной isTracking (кнопки).
+        
+        if (isTracking) {
+            if (!isOut) {
+                // События от бота
                 const key = `${cx},${cy}`;
                 if (msg.includes("вы обнаружили целебный источник")) {
                     markers[key] = '💖';
-                    drawMap();
-                } else if (msg.includes("вы успешно нашли выход")) {
-                    isTracking = false;
-                    updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
                     drawMap();
                 } else if (msg.includes("в этом направлении только глухая стена")) {
                     visited.delete(key);
@@ -238,15 +294,16 @@
                 } else if (msg.includes("источник ветра уже совсем близко")) {
                     markers[key] = '🚪';
                     drawMap();
+                } else if (msg.includes("вы успешно нашли выход")) {
+                    // Автоматически останавливаем запись, чтобы не рисовать шаги вне лабиринта
+                    toggleTracking();
+                    updateStatus("ВЫХОД НАЙДЕН! (Запись остановлена)", "blue");
                 }
-            }
-        } else {
-            // === ТВОИ СООБЩЕНИЯ ===
-            if (isTracking) {
+            } else {
+                // События от вас
                 if (msg.includes("покинуть лабиринт")) {
-                    isTracking = false;
-                    updateStatus("Покинули лабиринт. Жду нового...", "gray");
-                    drawMap();
+                    toggleTracking();
+                    updateStatus("Покинули лабиринт", "gray");
                     return;
                 }
 
@@ -264,7 +321,6 @@
                     const key = `${cx},${cy}`;
                     visited.add(key);
                     
-                    // Замена розового сердца на черное при повторном визите
                     if (markers[key] === '💖') {
                         markers[key] = '🖤';
                     }
@@ -274,31 +330,26 @@
         }
     }
 
-    // === Отрисовка на Canvas ===
     function drawMap() {
         const canvas = document.getElementById('mapCanvas');
         const ctx = canvas.getContext('2d');
         
-        // Очищаем холст
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
         const step = 40;
 
-        // Рисуем комнаты
         visited.forEach(pos => {
             const [rx, ry] = pos.split(',').map(Number);
             const x = centerX + rx * step;
             const y = centerY - ry * step;
 
-            // Квадрат комнаты
             ctx.fillStyle = "lightgray";
             ctx.strokeStyle = "gray";
             ctx.fillRect(x - 15, y - 15, 30, 30);
             ctx.strokeRect(x - 15, y - 15, 30, 30);
 
-            // Отрисовка смайликов
             if (markers[pos]) {
                 ctx.font = "16px Arial";
                 ctx.textAlign = "center";
@@ -308,7 +359,7 @@
             }
         });
 
-        // Рисуем текущую позицию (игрока)
+        // Рисуем курсор только если идет запись
         if (isTracking) {
             const px = centerX + cx * step;
             const py = centerY - cy * step;
@@ -328,10 +379,8 @@
         drawMap();
     }
 
-    // === Сохранение картинки ===
     function saveMap() {
         const canvas = document.getElementById('mapCanvas');
-        // Создаем виртуальную ссылку для скачивания картинки
         const link = document.createElement('a');
         link.download = 'labyrinth_map.png';
         link.href = canvas.toDataURL('image/png');
