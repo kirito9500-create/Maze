@@ -44,22 +44,23 @@
             margin-top: 10px;
         }
         button {
-            flex: 1 1 calc(50% - 10px); 
+            flex: 1 1 calc(33% - 10px); 
             color: white;
             border: none;
-            padding: 12px;
+            padding: 10px;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: bold;
             transition: 0.2s;
-            min-width: 130px;
         }
         
-        .btn-success { background-color: #4CAF50; }
+        .btn-success { background-color: #4CAF50; flex: 1 1 100%; font-size: 15px; padding: 12px; }
         .btn-success:hover { background-color: #45a049; }
         .btn-secondary { background-color: #2196F3; }
         .btn-secondary:hover { background-color: #0b7dda; }
+        .btn-warning { background-color: #ff9800; }
+        .btn-warning:hover { background-color: #e68a00; }
         .btn-danger { background-color: #f44336; }
         .btn-danger:hover { background-color: #da190b; }
         
@@ -90,9 +91,13 @@
             width: 100%; 
             height: auto; 
             aspect-ratio: 1 / 1; 
-            cursor: crosshair;
+            cursor: grab; /* Курсор в виде руки для перетаскивания */
             display: block;
             margin-top: 15px;
+            touch-action: none; /* Запрещает скролл страницы при вождении пальцем по карте */
+        }
+        canvas:active {
+            cursor: grabbing;
         }
     </style>
 </head>
@@ -118,8 +123,9 @@
 
     <div class="btn-group">
         <button id="btnStart" class="btn-success" onclick="toggleTracking()">Начать запись</button>
-        <button class="btn-secondary" onclick="saveMap()">Сохранить карту</button>
-        <button class="btn-secondary" onclick="resetMap()">Очистить холст</button>
+        <button class="btn-warning" onclick="centerCamera()">В центр</button>
+        <button class="btn-secondary" onclick="saveMap()">Скачать</button>
+        <button class="btn-secondary" onclick="resetMap()">Стереть</button>
         <button class="btn-danger" onclick="logout()">Выйти</button>
     </div>
 
@@ -139,6 +145,13 @@
     let visited = new Set(['0,0']);
     let markers = {}; 
 
+    // Переменные для камеры
+    let offsetX = 0;
+    let offsetY = 0;
+    let isDragging = false;
+    let startDragX = 0;
+    let startDragY = 0;
+
     window.onload = () => {
         const savedToken = localStorage.getItem('vk_token');
         const savedDialog = localStorage.getItem('vk_dialog_id');
@@ -148,6 +161,7 @@
             document.getElementById('dialogIdInput').value = savedDialog;
             login(); 
         }
+        initCamera(); // Инициализация управления камерой
         drawMap();
     };
 
@@ -199,6 +213,7 @@
             btn.innerText = "Остановить запись";
             btn.style.backgroundColor = "#ff9800"; 
             updateStatus("ЗАПИСЬ ИДЕТ", "green");
+            centerCamera(); // При старте сразу центрируемся на персонаже
         } else {
             btn.innerText = "Начать запись";
             btn.style.backgroundColor = "#4CAF50"; 
@@ -207,7 +222,6 @@
         drawMap();
     }
 
-    // === НОВАЯ СИСТЕМА: Получение истории сообщений ===
     function fetchInitialHistory() {
         const script = document.createElement('script');
         const callbackName = 'vkInit_' + Math.round(Math.random() * 100000);
@@ -220,14 +234,12 @@
                 isPolling = true;
                 updateStatus("Связь установлена. Жду включения записи.", "gray");
                 
-                // Запоминаем ID последнего сообщения, чтобы не рисовать карту по старым шагам
                 if (data.response.items && data.response.items.length > 0) {
                     const msg = data.response.items[0];
                     lastMessageId = msg.id;
                     displayInConsole(msg);
                 }
                 
-                // Запускаем проверку новых сообщений каждые 2 секунды
                 pollInterval = setInterval(pollHistory, 2000);
             } else {
                 updateStatus("Ошибка. Проверьте токен.", "red");
@@ -258,25 +270,20 @@
             document.head.removeChild(script);
 
             if (data.response && data.response.items) {
-                // Переворачиваем массив, чтобы читать от старых к самым новым
                 const items = data.response.items.reverse(); 
                 
                 for (let msg of items) {
-                    // Если сообщение новее, чем то, что мы видели последним
                     if (msg.id > lastMessageId) {
                         lastMessageId = msg.id;
                         displayInConsole(msg);
                         
                         if (isTracking) {
                             const msgText = (msg.text || "").toLowerCase();
-                            const isOut = msg.out === 1; // 1 - исходящее, 0 - входящее
+                            const isOut = msg.out === 1; 
                             handleMessage(msgText, isOut);
                         }
                     }
                 }
-            } else if (data.error && data.error.error_code === 5) {
-                alert("Срок действия токена истек или он недействителен.");
-                logout();
             }
         };
 
@@ -285,7 +292,6 @@
             document.head.removeChild(script);
         };
 
-        // Запрашиваем 5 последних сообщений раз в 2 секунды
         script.src = `https://api.vk.com/method/messages.getHistory?peer_id=${dialogId}&count=5&v=5.131&access_token=${token}&callback=${callbackName}`;
         document.head.appendChild(script);
     }
@@ -294,13 +300,101 @@
         const isOut = msg.out === 1;
         const prefix = isOut ? "Вы: " : "Бот: ";
         const color = isOut ? "#fff" : "#4CAF50"; 
-        const rawMsg = msg.text ? msg.text.split('\n')[0] + '...' : "[Вложение]"; // Берем только первую строку
+        const rawMsg = msg.text ? msg.text.split('\n')[0] + '...' : "[Вложение]"; 
         
         document.getElementById('lastMessageText').innerHTML = 
             `<span style="color: ${color}">${prefix}${rawMsg}</span>`;
     }
 
-    // === Логика обработки карты осталась без изменений ===
+    // === ЛОГИКА УПРАВЛЕНИЯ КАМЕРОЙ ===
+    function initCamera() {
+        const canvas = document.getElementById('mapCanvas');
+
+        // Вспомогательная функция для получения правильных координат мыши/пальца
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            // Вычисляем масштаб, так как CSS сжимает холст на телефоне
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let clientX = e.clientX;
+            let clientY = e.clientY;
+            
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            }
+            
+            return {
+                x: (clientX - rect.left) * scaleX,
+                y: (clientY - rect.top) * scaleY
+            };
+        }
+
+        // События для мышки (ПК)
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            const pos = getPos(e);
+            startDragX = pos.x - offsetX;
+            startDragY = pos.y - offsetY;
+        });
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const pos = getPos(e);
+                offsetX = pos.x - startDragX;
+                offsetY = pos.y - startDragY;
+                drawMap();
+            }
+        });
+        canvas.addEventListener('mouseup', () => isDragging = false);
+        canvas.addEventListener('mouseleave', () => isDragging = false);
+
+        // События для пальцев (Телефоны)
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                isDragging = true;
+                const pos = getPos(e);
+                startDragX = pos.x - offsetX;
+                startDragY = pos.y - offsetY;
+            }
+        });
+        canvas.addEventListener('touchmove', (e) => {
+            if (isDragging && e.touches.length === 1) {
+                e.preventDefault(); // Запрещаем браузеру тянуть страницу вниз
+                const pos = getPos(e);
+                offsetX = pos.x - startDragX;
+                offsetY = pos.y - startDragY;
+                drawMap();
+            }
+        }, { passive: false });
+        canvas.addEventListener('touchend', () => isDragging = false);
+    }
+
+    // Фокус камеры (автоматический сдвиг, если персонаж у края)
+    function autoFocusCamera() {
+        const canvas = document.getElementById('mapCanvas');
+        const step = 40;
+        const margin = 100; // Расстояние от края в пикселях, при котором камера поедет
+
+        // Где сейчас нарисован персонаж
+        const px = (canvas.width / 2) + cx * step + offsetX;
+        const py = (canvas.height / 2) - cy * step + offsetY;
+
+        // Если он слишком близко к краю, двигаем камеру (меняем смещение)
+        if (px < margin) offsetX += (margin - px);
+        if (px > canvas.width - margin) offsetX -= (px - (canvas.width - margin));
+        if (py < margin) offsetY += (margin - py);
+        if (py > canvas.height - margin) offsetY -= (py - (canvas.height - margin));
+    }
+
+    // Возврат камеры ровно в центр на персонажа
+    function centerCamera() {
+        const step = 40;
+        // Математически смещаем весь мир так, чтобы текущие cx, cy оказались в нуле (по центру)
+        offsetX = -cx * step;
+        offsetY = cy * step;
+        drawMap();
+    }
+
     function handleMessage(msgText, isOut) {
         if (!isOut) {
             const key = `${cx},${cy}`;
@@ -311,6 +405,7 @@
                 visited.delete(key);
                 cx = lastX;
                 cy = lastY;
+                autoFocusCamera(); // Фокусируем
                 drawMap();
             } else if (msgText.includes("источник ветра уже совсем близко")) {
                 markers[key] = '🚪';
@@ -341,6 +436,8 @@
                 visited.add(key);
                 
                 if (markers[key] === '💖') { markers[key] = '🖤'; }
+                
+                autoFocusCamera(); // Камера следует за нами
                 drawMap();
             }
         }
@@ -352,8 +449,9 @@
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
+        // Теперь центр холста смещается на наши переменные камеры
+        const centerX = canvas.width / 2 + offsetX;
+        const centerY = canvas.height / 2 + offsetY;
         const step = 40;
 
         visited.forEach(pos => {
@@ -391,6 +489,8 @@
         lastX = 0; lastY = 0;
         visited = new Set(['0,0']);
         markers = {};
+        offsetX = 0; // Сбрасываем камеру тоже
+        offsetY = 0;
         drawMap();
     }
 
