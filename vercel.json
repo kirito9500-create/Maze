@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/vk-api/:path*",
+      "destination": "https://api.vk.com/:path*"
+    }
+  ]
+}
